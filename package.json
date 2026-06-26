@@ -4,6 +4,11 @@
   "description": "Intelligent local LLM proxy for context compression, cost tracking, and automatic prompt caching optimization.",
   "version": "1.0.0",
   "publisher": "dnislno",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dnislno/tokencounter.git"
+  },
+  "license": "MIT",
   "engines": {
     "vscode": "^1.80.0"
   },

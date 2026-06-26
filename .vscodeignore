@@ -1,0 +1,9 @@
+.github/**
+src/**
+tsconfig.json
+test_scratch.js
+Dockerfile
+.gitignore
+.git/**
+.vscode/**
+package-lock.json
