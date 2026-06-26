@@ -2,6 +2,7 @@ import * as http from 'http';
 import * as https from 'https';
 import * as url from 'url';
 import { CacheOrchestrator } from './orchestrator';
+import { DASHBOARD_HTML } from './dashboard';
 
 export interface ProxyStats {
   totalRequests: number;
@@ -15,6 +16,7 @@ export class TokenCounterProxy {
   private server: http.Server | null = null;
   private port: number;
   private logCallback: (msg: string) => void = () => {};
+  private sseClients: http.ServerResponse[] = [];
   
   private stats: ProxyStats = {
     totalRequests: 0,
@@ -34,6 +36,9 @@ export class TokenCounterProxy {
 
   private log(msg: string) {
     this.logCallback(msg);
+    // Push real-time log messages to all active SSE clients (Dashboard Web UI)
+    const sseMessage = `data: ${msg.replace(/\n/g, ' ')}\n\n`;
+    this.sseClients.forEach(c => c.write(sseMessage));
   }
 
   public getStats(): ProxyStats {
@@ -96,6 +101,55 @@ export class TokenCounterProxy {
     if (req.method === 'OPTIONS') {
       res.writeHead(200);
       res.end();
+      return;
+    }
+
+    const parsedUrl = url.parse(req.url || '', true);
+    const pathname = parsedUrl.pathname || '';
+
+    // Route: GET /dashboard or /dashboard/
+    if (req.method === 'GET' && (pathname === '/dashboard' || pathname === '/dashboard/')) {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(DASHBOARD_HTML);
+      return;
+    }
+
+    // Route: GET /v1/stats
+    if (req.method === 'GET' && pathname === '/v1/stats') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(this.getStats()));
+      return;
+    }
+
+    // Route: POST /v1/reset-stats
+    if (req.method === 'POST' && pathname === '/v1/reset-stats') {
+      this.stats = {
+        totalRequests: 0,
+        originalTokens: 0,
+        prunedTokens: 0,
+        savedTokens: 0,
+        savedUSD: 0
+      };
+      this.log('[Proxy] Statistics reset via Web UI');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok' }));
+      return;
+    }
+
+    // Route: GET /v1/events (SSE Stream)
+    if (req.method === 'GET' && pathname === '/v1/events') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      
+      res.write('data: Connected to TokenCounter SSE Stream\n\n');
+      this.sseClients.push(res);
+
+      req.on('close', () => {
+        this.sseClients = this.sseClients.filter(c => c !== res);
+      });
       return;
     }
 
