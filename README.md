@@ -83,4 +83,13 @@ aider --openai-api-base http://localhost:9099/v1
 ---
 
 ## 🏛️ License
-This project is proprietary and built for high-security, high-efficiency corporate environments.
+
+This project is licensed under the **Business Source License 1.1 (BSL 1.1)**.
+
+### License Summary
+- **Free for Personal & Educational Use**: You are free to use, modify, and distribute this software for personal, educational, and non-production testing purposes.
+- **Free for Small Teams (Commercial Production)**: Commercial use in a production environment is completely free for teams/organizations consisting of **5 or fewer developers**.
+- **Commercial License Required**: Any use of this software in a production environment by a team or organization with **more than 5 developers** requires a separate commercial license from the Licensor (`dnislno`).
+- **Open Source Transition**: On **June 26, 2030**, the license for this version will automatically convert to the **Apache License, Version 2.0** (making it fully open-source after 4 years).
+
+For the full legal terms, please refer to the [LICENSE](LICENSE) file.

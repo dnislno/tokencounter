@@ -8,7 +8,7 @@
     "type": "git",
     "url": "https://github.com/dnislno/tokencounter.git"
   },
-  "license": "MIT",
+  "license": "BUSL-1.1",
   "engines": {
     "vscode": "^1.80.0"
   },

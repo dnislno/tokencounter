@@ -1,0 +1,35 @@
+Business Source License 1.1
+
+Parameters:
+
+Licensor:           dnislno
+Development Object: TokenCounter & CacheOrchestrator (including all source code, binaries, and VS Code extension)
+Change Date:        June 26, 2030
+Change License:     Apache License, Version 2.0
+Additional Use Grant:
+                    You are licensed to use the Licensed Work for personal, educational, 
+                    and non-production purposes. You are also licensed to use the Licensed Work 
+                    for commercial production purposes internally within a team or organization 
+                    consisting of no more than five (5) developers in total. Any use in a 
+                    production environment by an organization with more than five (5) developers 
+                    requires a separate commercial license from the Licensor.
+
+-----------------------------------------------------------------------------------------
+
+License Text:
+
+The Licensor hereby grants you the right to copy, modify, create derivative works, redistribute, 
+and make non-production use of the Licensed Work. The Licensor may make an Additional Use Grant, 
+which is additional permissions to make use of the Licensed Work. The Additional Use Grant for 
+this Licensed Work is defined above.
+
+The Licensed Work will automatically convert to the Change License on the Change Date. After the 
+Change Date, your use of the Licensed Work will be governed by the Change License.
+
+All copies of the Licensed Work must contain this license document, including the Licensor, 
+Development Object, Change Date, Change License, and Additional Use Grant definitions above.
+
+To the extent permitted by applicable law, the Licensed Work is provided on an "as is" basis. 
+The Licensor hereby disclaims all warranties and conditions, express or implied, including 
+(without limitation) the warranties of merchantability, fitness for a particular purpose, 
+and non-infringement.
