@@ -35,9 +35,9 @@ jobs:
     - name: Build Standalone Binaries (pkg)
       run: |
         mkdir -p dist
-        npx pkg out/proxy_launcher.js --targets node20-win-x64 --output dist/tokencounter-proxy-win.exe
-        npx pkg out/proxy_launcher.js --targets node20-linux-x64 --output dist/tokencounter-proxy-linux
-        npx pkg out/proxy_launcher.js --targets node20-macos-x64 --output dist/tokencounter-proxy-macos
+        npx pkg out/proxy_launcher.js --targets node18-win-x64 --output dist/tokencounter-proxy-win.exe
+        npx pkg out/proxy_launcher.js --targets node18-linux-x64 --output dist/tokencounter-proxy-linux
+        npx pkg out/proxy_launcher.js --targets node18-macos-x64 --output dist/tokencounter-proxy-macos
 
     - name: Create GitHub Release and Upload Assets
       uses: softprops/action-gh-release@v2
