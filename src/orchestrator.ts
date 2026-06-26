@@ -1,5 +1,4 @@
-import { FileBlockDetector, FileProcessed } from './detector';
-import { LexicalPruner } from './pruner';
+import { FileBlockDetector, FileProcessed, CacheEntry } from './detector';
 
 export interface OrchestrationResult {
   optimizedPayload: any;
@@ -7,6 +6,9 @@ export interface OrchestrationResult {
 }
 
 export class CacheOrchestrator {
+  // Session cache to store pruned file contents and guarantee prefix stability across multi-turn chats
+  private static sessionCache = new Map<string, CacheEntry>();
+
   /**
    * Helper to determine if the target model supports Anthropic-style prompt caching.
    */
@@ -18,7 +20,7 @@ export class CacheOrchestrator {
   /**
    * Orchestrates the incoming payload to guarantee and maximize Prompt Caching.
    */
-  public static orchestrate(payload: any): OrchestrationResult {
+  public static async orchestrate(payload: any): Promise<OrchestrationResult> {
     if (!payload || !Array.isArray(payload.messages) || payload.messages.length === 0) {
       return { optimizedPayload: payload, filesProcessed: [] };
     }
@@ -26,6 +28,11 @@ export class CacheOrchestrator {
     const messages = [...payload.messages];
     const model = payload.model || '';
     const isAnthropic = this.supportsAnthropicCaching(model);
+
+    // If this is a new session (Turn 1, system + user or just user), clear the session cache
+    if (messages.length <= 2) {
+      this.sessionCache.clear();
+    }
 
     // 1. Extract the last user message to serve as the hydration context
     let userPromptContext = '';
@@ -47,7 +54,6 @@ export class CacheOrchestrator {
     let systemPromptMsg: any = null;
 
     // Pattern to match file headers/blocks and extract them
-    // This allows us to separate files from the conversational flow and stabilize them
     for (const msg of messages) {
       if (msg.role === 'system') {
         systemPromptMsg = msg;
@@ -55,12 +61,10 @@ export class CacheOrchestrator {
       }
 
       if (typeof msg.content === 'string') {
-        const detection = FileBlockDetector.detectAndPrune(msg.content, userPromptContext);
+        // Pass our sessionCache to detectAndPrune to reuse previously pruned file contents
+        const detection = await FileBlockDetector.detectAndPrune(msg.content, userPromptContext, this.sessionCache);
         
         if (detection.filesProcessed.length > 0) {
-          // Files were found in this message. We extract them.
-          // To keep the message flow intact, we replace the files in the original message with a placeholder
-          // referring to the Stable Codebase Context at the beginning.
           let cleanedContent = msg.content;
           
           // Pattern A: Markdown code block preceded by file header
@@ -101,7 +105,7 @@ export class CacheOrchestrator {
     // 3. Reconstruct the payload to maximize cache alignment
     const newMessages: any[] = [];
 
-    // Step A: System Prompt (Place at index 0 and mark for caching if Anthropic)
+    // Step A: System Prompt
     if (systemPromptMsg) {
       const systemMsg = { ...systemPromptMsg };
       if (isAnthropic) {
@@ -123,13 +127,11 @@ export class CacheOrchestrator {
       }
 
       // Token Alignment & Padding to nearest 1024 tokens (Anthropic boundary)
-      // This prevents minor shifts in chat history from invalidating the cache block
       const currentTokenEstimate = Math.ceil(codebaseBlock.length / 4);
       const next1024Boundary = Math.ceil(currentTokenEstimate / 1024) * 1024;
       const paddingNeeded = (next1024Boundary - currentTokenEstimate) * 4;
       
       if (paddingNeeded > 0) {
-        // Append benign comment block for padding alignment
         codebaseBlock += `\n/* ${' '.repeat(Math.max(0, paddingNeeded - 10))} */\n`;
       }
 
@@ -139,7 +141,6 @@ export class CacheOrchestrator {
       };
 
       if (isAnthropic) {
-        // Inject the cache breakpoint at the end of the stable codebase context
         codebaseMsg.cache_control = { type: 'ephemeral' };
       }
 
@@ -153,14 +154,10 @@ export class CacheOrchestrator {
       const isLastMessage = (i === remainingMessages.length - 1);
 
       if (!isLastMessage && msg.role !== 'system' && typeof msg.content === 'string') {
-        // De-clutter: replace large code blocks in past history turns with placeholders
-        // to prevent KV Cache Pool Exhaustion in long-running sessions
         let content = msg.content;
         
-        // Pattern to match markdown code blocks
         const markdownCodeBlockPattern = /```[a-zA-Z0-9\-]*\r?\n([\s\S]*?)\r?\n```/g;
         content = content.replace(markdownCodeBlockPattern, (matchStr: string, code: string) => {
-          // Only prune if the code block is substantial (e.g. > 150 characters)
           if (code.length > 150) {
             return `\n[Historical code block (~${Math.ceil(code.length / 4)} tokens) pruned by TokenCounter to prevent KV Cache Exhaustion]\n`;
           }
@@ -175,7 +172,6 @@ export class CacheOrchestrator {
 
     newMessages.push(...processedHistory);
 
-    // 4. Return the optimized, cache-aligned payload
     return {
       optimizedPayload: {
         ...payload,

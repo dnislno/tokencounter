@@ -1,4 +1,6 @@
 import * as path from 'path';
+import * as fs from 'fs';
+import Parser from 'web-tree-sitter';
 
 export interface PruneResult {
   prunedCode: string;
@@ -7,10 +9,119 @@ export interface PruneResult {
   compressionRatio: number;
 }
 
-export class LexicalPruner {
+interface Replacement {
+  start: number;
+  end: number;
+  text: string;
+}
+
+// Maps file extensions to their respective tree-sitter wasm filenames
+const LANGUAGE_WASM_MAP: { [ext: string]: string } = {
+  '.js': 'tree-sitter-javascript.wasm',
+  '.jsx': 'tree-sitter-javascript.wasm',
+  '.ts': 'tree-sitter-typescript.wasm',
+  '.tsx': 'tree-sitter-tsx.wasm',
+  '.py': 'tree-sitter-python.wasm',
+  '.pyw': 'tree-sitter-python.wasm',
+  '.c': 'tree-sitter-c.wasm',
+  '.cpp': 'tree-sitter-cpp.wasm',
+  '.cc': 'tree-sitter-cpp.wasm',
+  '.cxx': 'tree-sitter-cpp.wasm',
+  '.h': 'tree-sitter-c.wasm',
+  '.hpp': 'tree-sitter-cpp.wasm',
+  '.java': 'tree-sitter-java.wasm',
+  '.cs': 'tree-sitter-c_sharp.wasm',
+  '.go': 'tree-sitter-go.wasm',
+};
+
+// Cache for loaded language grammars to ensure high performance
+const languageCache = new Map<string, Parser.Language>();
+let isInitialized = false;
+
+// Locates a wasm grammar file dynamically across packaged/development environments
+function getWasmPath(wasmName: string): string {
+  const pathsToTry = [
+    path.join(__dirname, '..', 'node_modules', 'tree-sitter-wasms', 'out', wasmName),
+    path.join(__dirname, 'node_modules', 'tree-sitter-wasms', 'out', wasmName),
+    path.join(process.cwd(), 'node_modules', 'tree-sitter-wasms', 'out', wasmName),
+  ];
+
+  for (const p of pathsToTry) {
+    if (fs.existsSync(p)) {
+      return p;
+    }
+  }
+  
+  throw new Error(`Could not locate WASM grammar file: ${wasmName}`);
+}
+
+// Guarantees web-tree-sitter is properly initialized with correct core WASM path
+async function ensureInitialized() {
+  if (!isInitialized) {
+    const coreWasmPaths = [
+      path.join(__dirname, '..', 'node_modules', 'web-tree-sitter', 'web-tree-sitter.wasm'),
+      path.join(__dirname, 'node_modules', 'web-tree-sitter', 'web-tree-sitter.wasm'),
+      path.join(process.cwd(), 'node_modules', 'web-tree-sitter', 'web-tree-sitter.wasm'),
+    ];
+    
+    let coreWasmPath = '';
+    for (const p of coreWasmPaths) {
+      if (fs.existsSync(p)) {
+        coreWasmPath = p;
+        break;
+      }
+    }
+
+    if (coreWasmPath) {
+      await Parser.init({
+        locateFile(scriptName: string) {
+          if (scriptName === 'web-tree-sitter.wasm') {
+            return coreWasmPath;
+          }
+          return scriptName;
+        }
+      });
+    } else {
+      await Parser.init();
+    }
+    isInitialized = true;
+  }
+}
+
+// Retrieves and caches the requested tree-sitter language
+async function getLanguage(ext: string): Promise<Parser.Language | null> {
+  const wasmName = LANGUAGE_WASM_MAP[ext];
+  if (!wasmName) return null;
+
+  if (languageCache.has(wasmName)) {
+    return languageCache.get(wasmName)!;
+  }
+
+  try {
+    const wasmPath = getWasmPath(wasmName);
+    const lang = await Parser.Language.load(wasmPath);
+    languageCache.set(wasmName, lang);
+    return lang;
+  } catch (err) {
+    console.error(`[ASTPruner] Failed to load tree-sitter language for ${ext}:`, err);
+    return null;
+  }
+}
+
+// Helper to determine the leading indentation of a line
+function getLineIndent(code: string, index: number): string {
+  let start = index;
+  while (start > 0 && code[start - 1] !== '\n' && code[start - 1] !== '\r') {
+    start--;
+  }
+  const linePart = code.substring(start, index);
+  const match = linePart.match(/^(\s*)/);
+  return match ? match[1] : '';
+}
+
+export class ASTPruner {
   /**
    * Estimates token count based on a standard 4-characters-per-token heuristic.
-   * This is a safe, fast fallback for local estimation.
    */
   private static estimateTokens(text: string): number {
     return Math.ceil(text.length / 4);
@@ -18,60 +129,68 @@ export class LexicalPruner {
 
   /**
    * Evaluates whether a function/method should be kept intact (hydrated)
-   * based on user query keywords. Includes smart heuristics to prevent
-   * false positives from generic words like 'user' or 'get'.
+   * based on user query keywords.
    */
   private static shouldHydrate(name: string, hydrationList: string[]): boolean {
-    const genericWords = new Set(['get', 'set', 'user', 'data', 'file', 'info', 'item', 'list', 'name', 'type', 'val', 'value', 'run', 'exec', 'make', 'do', 'help', 'api', 'main']);
+    const genericWords = new Set(['get', 'set', 'user', 'data', 'file', 'info', 'item', 'list', 'name', 'type', 'val', 'value', 'run', 'exec', 'make', 'do', 'help', 'api', 'main', 'handle']);
+    const nameParts = name.split(/[_\s]+|(?=[A-Z])/).map(p => p.toLowerCase());
     const lowerName = name.toLowerCase();
-    
-    // Split camelCase and snake_case into components
-    const nameParts = lowerName.split(/[_\s]+|(?=[A-Z])/).map(p => p.toLowerCase());
 
     return hydrationList.some(h => {
       const lowerH = h.toLowerCase();
-      
-      // 1. Exact match
       if (lowerH === lowerName) return true;
-      
-      // 2. Component match (e.g. 'register' matches 'register_user'), excluding generic words
       if (nameParts.includes(lowerH) && !genericWords.has(lowerH)) return true;
 
-      // 3. Simple singular/plural or basic suffix handling (e.g. 'registration' matches 'register' via 'regis' prefix)
       for (const part of nameParts) {
         if (genericWords.has(part)) continue;
-        
-        // Check for 5-character prefix overlap (lightweight stemmer)
         if (part.length >= 5 && lowerH.length >= 5) {
           if (part.substring(0, 5) === lowerH.substring(0, 5)) return true;
         }
-        
-        // Fallback to substring matching
         if (part.length > 3 && lowerH.length > 3) {
           if (part.includes(lowerH) || lowerH.includes(part)) return true;
         }
       }
-      
       return false;
     });
   }
 
   /**
-   * Prunes code in-place, keeping the file structure intact.
+   * AST-based structural code pruner using web-tree-sitter.
+   * Preserves signatures and stubs non-targeted bodies dynamically.
    */
-  public static prune(filePath: string, code: string, hydrationList: string[]): PruneResult {
+  public static async prune(filePath: string, code: string, hydrationList: string[]): Promise<PruneResult> {
     const ext = path.extname(filePath).toLowerCase();
     const originalTokens = this.estimateTokens(code);
     let prunedCode = code;
 
     try {
-      if (ext === '.py') {
-        prunedCode = this.prunePython(code, hydrationList);
-      } else if (['.ts', '.js', '.tsx', '.jsx', '.json', '.java', '.cpp', '.c', '.cs'].includes(ext)) {
-        prunedCode = this.pruneBraceStyle(code, hydrationList, ext);
+      await ensureInitialized();
+      const lang = await getLanguage(ext);
+      
+      if (lang) {
+        const parser = new Parser();
+        parser.setLanguage(lang);
+        const tree = parser.parse(code);
+        
+        const replacements: Replacement[] = [];
+        const isPython = (ext === '.py' || ext === '.pyw');
+        
+        this.collectReplacements(tree.rootNode, hydrationList, replacements, code, isPython);
+        
+        if (replacements.length > 0) {
+          // Sort replacements in descending order of start index to apply them back-to-front
+          replacements.sort((a, b) => b.start - a.start);
+          
+          let codeBuffer = code;
+          for (const rep of replacements) {
+            codeBuffer = codeBuffer.substring(0, rep.start) + rep.text + codeBuffer.substring(rep.end);
+          }
+          prunedCode = codeBuffer;
+        }
       }
     } catch (err) {
-      // In case of any parsing error, fallback to original code to ensure zero-bug robustness
+      console.error(`[ASTPruner] Error pruning ${filePath}:`, err);
+      // Fail-safe fallback to original code
       prunedCode = code;
     }
 
@@ -87,177 +206,80 @@ export class LexicalPruner {
   }
 
   /**
-   * Indent-based pruner for Python.
-   * Preserves function signatures and stubs the body with 'pass'.
+   * Recursively traverses AST to identify and collect pruneable functions/methods
    */
-  private static prunePython(code: string, hydrationList: string[]): string {
-    const lines = code.split(/\r?\n/);
-    const resultLines: string[] = [];
-    
-    // Matches 'def function_name(...):' or class methods
-    const pythonDefRegex = /^(\s*)def\s+(\w+)\s*\(.*?\)\s*(?:->\s*[^:]+)?\s*:/;
+  private static collectReplacements(
+    node: Parser.SyntaxNode,
+    hydrationList: string[],
+    replacements: Replacement[],
+    code: string,
+    isPython: boolean
+  ) {
+    let isFunc = false;
+    let name = '';
+    let bodyNode: Parser.SyntaxNode | null = null;
 
-    let isPruning = false;
-    let pruneIndentLevel = -1;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmed = line.trim();
-
-      // Skip empty lines or comments while pruning
-      if (isPruning) {
-        if (trimmed === '' || trimmed.startsWith('#')) {
-          continue;
-        }
-
-        // Calculate indentation level of the current line
-        const indentMatch = line.match(/^(\s*)/);
-        const indentLevel = indentMatch ? indentMatch[1].length : 0;
-
-        if (indentLevel <= pruneIndentLevel) {
-          // We have exited the function body scope
-          isPruning = false;
-          pruneIndentLevel = -1;
-        } else {
-          // Skip the body line
-          continue;
-        }
+    if (isPython) {
+      if (node.type === 'function_definition') {
+        isFunc = true;
+        const nameNode = node.childForFieldName('name');
+        name = nameNode ? nameNode.text : '';
+        bodyNode = node.childForFieldName('body');
       }
-
-      // Check for new function declaration
-      const match = line.match(pythonDefRegex);
-      if (match) {
-        const indent = match[1];
-        const name = match[2];
-
-        const shouldHydrate = this.shouldHydrate(name, hydrationList);
-
-        if (!shouldHydrate) {
-          isPruning = true;
-          pruneIndentLevel = indent.length;
-          
-          // Push signature line
-          resultLines.push(line);
-          // Push valid indented stub
-          const bodyIndent = indent + '    ';
-          resultLines.push(`${bodyIndent}pass  # ... [TokenCounter: ${name}() body hidden] ...`);
-          continue;
-        }
-      }
-
-      resultLines.push(line);
-    }
-
-    return resultLines.join('\n');
-  }
-
-  /**
-   * Robust brace-counting parser for JS/TS/Java/C++ style languages.
-   * Preserves signatures and class structure, stubs non-targeted bodies in-place.
-   */
-  private static pruneBraceStyle(code: string, hydrationList: string[], ext: string): string {
-    const lines = code.split(/\r?\n/);
-    const resultLines: string[] = [];
-
-    // Match function/method declarations, e.g., 'function name(', 'name(args) {', 'async name('
-    // Avoid matching control structures like 'if', 'for', 'while', 'switch', 'catch'
-    const functionRegex = /(?:function\s+(\w+)|(\w+)\s*\([^)]*\)\s*\{)/;
-    const reservedWords = new Set(['if', 'for', 'while', 'switch', 'catch', 'with', 'constructor']);
-
-    let i = 0;
-    while (i < lines.length) {
-      const line = lines[i];
-      const trimmed = line.trim();
-
-      // Skip json files or simple configuration blocks
-      if (ext === '.json') {
-        resultLines.push(line);
-        i++;
-        continue;
-      }
-
-      const match = line.match(functionRegex);
-      if (match) {
-        const name = match[1] || match[2];
-        
-        if (name && !reservedWords.has(name)) {
-          const shouldHydrate = this.shouldHydrate(name, hydrationList);
-
-          if (!shouldHydrate) {
-            // Find the opening brace '{'
-            let openBraceIndex = line.indexOf('{');
-            let braceLineIndex = i;
-
-            // Scan forward if the opening brace is on a subsequent line
-            while (openBraceIndex === -1 && braceLineIndex < lines.length - 1) {
-              braceLineIndex++;
-              openBraceIndex = lines[braceLineIndex].indexOf('{');
-            }
-
-            if (openBraceIndex !== -1) {
-              // Push all signature lines up to the opening brace
-              for (let j = i; j <= braceLineIndex; j++) {
-                if (j === braceLineIndex) {
-                  const partBeforeBrace = lines[j].substring(0, openBraceIndex + 1);
-                  resultLines.push(partBeforeBrace);
-                } else {
-                  resultLines.push(lines[j]);
-                }
-              }
-
-              // Push the in-place placeholder comment
-              const sigIndentMatch = lines[i].match(/^(\s*)/);
-              const sigIndent = sigIndentMatch ? sigIndentMatch[1] : '';
-              const bodyIndent = sigIndent + '    ';
-              resultLines.push(`${bodyIndent}// ... [TokenCounter: ${name}() body hidden] ...`);
-
-              // Brace counting algorithm to skip the body
-              let braceCount = 1;
-              let charIndex = openBraceIndex + 1;
-              let currentLineIndex = braceLineIndex;
-
-              while (currentLineIndex < lines.length && braceCount > 0) {
-                const curLine = lines[currentLineIndex];
-                
-                while (charIndex < curLine.length && braceCount > 0) {
-                  const char = curLine[charIndex];
-                  if (char === '{') {
-                    braceCount++;
-                  } else if (char === '}') {
-                    braceCount--;
-                  }
-                  charIndex++;
-                }
-
-                if (braceCount > 0) {
-                  currentLineIndex++;
-                  charIndex = 0;
-                }
-              }
-
-              // Handle the closing brace line
-              if (currentLineIndex < lines.length) {
-                const remainingLine = lines[currentLineIndex].substring(charIndex);
-                if (remainingLine.trim() !== '') {
-                  // If there is code remaining on the closing brace line (e.g. '} else {'), keep it
-                  // But indent it nicely
-                  resultLines.push(`${sigIndent}}${remainingLine}`);
-                } else {
-                  resultLines.push(`${sigIndent}}`);
-                }
-                // Update outer loop index to resume after the function body
-                i = currentLineIndex + 1;
-                continue;
-              }
+    } else {
+      // JS/TS/C++/Java/C# style
+      if (node.type === 'function_declaration' || node.type === 'method_definition' || node.type === 'generator_function_declaration') {
+        isFunc = true;
+        const nameNode = node.childForFieldName('name');
+        name = nameNode ? nameNode.text : '';
+        bodyNode = node.childForFieldName('body');
+      } else if (node.type === 'arrow_function' || node.type === 'function_expression') {
+        isFunc = true;
+        bodyNode = node.childForFieldName('body');
+        if (node.parent && node.parent.type === 'variable_declarator') {
+          for (let i = 0; i < node.parent.childCount; i++) {
+            const child = node.parent.child(i);
+            if (child && child.type === 'identifier') {
+              name = child.text;
+              break;
             }
           }
         }
       }
-
-      resultLines.push(line);
-      i++;
     }
 
-    return resultLines.join('\n');
+    if (isFunc && bodyNode) {
+      const keep = name ? this.shouldHydrate(name, hydrationList) : true;
+      if (!keep) {
+        let replacementText = '';
+        if (isPython) {
+          const indent = getLineIndent(code, node.startIndex);
+          const currentIndent = indent || '';
+          replacementText = `\n${currentIndent}    pass  # ... [TokenCounter: ${name}() body hidden] ...`;
+          replacements.push({
+            start: bodyNode.startIndex,
+            end: bodyNode.endIndex,
+            text: replacementText
+          });
+        } else {
+          replacementText = `{ /* ... [TokenCounter: ${name || 'anonymous'}() body hidden] ... */ }`;
+          replacements.push({
+            start: bodyNode.startIndex,
+            end: bodyNode.endIndex,
+            text: replacementText
+          });
+        }
+        // Do not traverse children of pruned node
+        return;
+      }
+    }
+
+    // Traverse children
+    for (let i = 0; i < node.childCount; i++) {
+      const child = node.child(i);
+      if (child) {
+        this.collectReplacements(child, hydrationList, replacements, code, isPython);
+      }
+    }
   }
 }

@@ -175,7 +175,7 @@ export class TokenCounterProxy {
       chunks.push(chunk);
     });
 
-    req.on('end', () => {
+    req.on('end', async () => {
       const bodyBuffer = Buffer.concat(chunks);
       
       try {
@@ -188,7 +188,7 @@ export class TokenCounterProxy {
         const payload = JSON.parse(payloadStr);
         
         // Apply our Stable Prefix Caching Orchestration
-        const result = CacheOrchestrator.orchestrate(payload);
+        const result = await CacheOrchestrator.orchestrate(payload);
         
         this.stats.totalRequests++;
 
