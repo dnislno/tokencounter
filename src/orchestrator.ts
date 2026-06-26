@@ -146,8 +146,34 @@ export class CacheOrchestrator {
       newMessages.push(codebaseMsg);
     }
 
-    // Step C: Append the remaining chat history and dynamic user queries
-    newMessages.push(...remainingMessages);
+    // Step C: Process and de-clutter past chat history to prevent KV Cache Pool Exhaustion
+    const processedHistory: any[] = [];
+    for (let i = 0; i < remainingMessages.length; i++) {
+      const msg = remainingMessages[i];
+      const isLastMessage = (i === remainingMessages.length - 1);
+
+      if (!isLastMessage && msg.role !== 'system' && typeof msg.content === 'string') {
+        // De-clutter: replace large code blocks in past history turns with placeholders
+        // to prevent KV Cache Pool Exhaustion in long-running sessions
+        let content = msg.content;
+        
+        // Pattern to match markdown code blocks
+        const markdownCodeBlockPattern = /```[a-zA-Z0-9\-]*\r?\n([\s\S]*?)\r?\n```/g;
+        content = content.replace(markdownCodeBlockPattern, (matchStr: string, code: string) => {
+          // Only prune if the code block is substantial (e.g. > 150 characters)
+          if (code.length > 150) {
+            return `\n[Historical code block (~${Math.ceil(code.length / 4)} tokens) pruned by TokenCounter to prevent KV Cache Exhaustion]\n`;
+          }
+          return matchStr;
+        });
+
+        processedHistory.push({ ...msg, content });
+      } else {
+        processedHistory.push(msg);
+      }
+    }
+
+    newMessages.push(...processedHistory);
 
     // 4. Return the optimized, cache-aligned payload
     return {
