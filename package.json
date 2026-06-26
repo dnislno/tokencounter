@@ -1,0 +1,60 @@
+{
+  "name": "tokencounter",
+  "displayName": "TokenCounter & CacheOrchestrator",
+  "description": "Intelligent local LLM proxy for context compression, cost tracking, and automatic prompt caching optimization.",
+  "version": "1.0.0",
+  "publisher": "dnislno",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tokencounter.startProxy",
+        "title": "TokenCounter: Start Local Proxy"
+      },
+      {
+        "command": "tokencounter.stopProxy",
+        "title": "TokenCounter: Stop Local Proxy"
+      },
+      {
+        "command": "tokencounter.viewStats",
+        "title": "TokenCounter: View Optimization Stats"
+      }
+    ],
+    "configuration": {
+      "title": "TokenCounter",
+      "properties": {
+        "tokencounter.proxyPort": {
+          "type": "integer",
+          "default": 9099,
+          "description": "Port for the local TokenCounter reverse proxy server."
+        },
+        "tokencounter.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start the proxy server when VS Code opens."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.80.0",
+    "@types/node": "^18.17.0",
+    "typescript": "^5.1.3"
+  },
+  "dependencies": {
+    "js-tiktoken": "^1.0.21"
+  }
+}
